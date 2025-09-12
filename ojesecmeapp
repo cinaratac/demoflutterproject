@@ -1,0 +1,846 @@
+import 'dart:math';
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:fluttertoast/fluttertoast.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_colorpicker/flutter_colorpicker.dart';
+
+void main(List<String> args) {
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(colorSchemeSeed: Colors.pink, useMaterial3: true),
+      home: const Colorpickerpage(),
+    );
+  }
+}
+
+class Colorpickerpage extends StatefulWidget {
+  const Colorpickerpage({super.key});
+
+  @override
+  State<Colorpickerpage> createState() => _ColorpickerpageState();
+}
+
+class _ColorpickerpageState extends State<Colorpickerpage> {
+  late Color secilenrenk;
+  bool iscircle = false;
+  bool isshowcolorname = true;
+
+  /// Kayıtlı kullanım sayıları. Key: renk int değeri (Color.value), Value: count
+  final Map<int, int> _usageCounts = {};
+
+  /// Favori renkler (color.value set'i)
+  final Set<int> _favorites = <int>{};
+  static const String _favKey = 'favorites_v1';
+
+  /// Dinamik renk paleti (Color -> İsim)
+  final Map<Color, String> renkler = {};
+
+  /// Varsayılan palet (ilk kurulumda yüklenecek)
+  final Map<Color, String> _defaultRenkler = {
+    Color.fromARGB(255, 161, 40, 31): "Kırmızı",
+    Color.fromARGB(255, 69, 127, 174): "Mavi",
+    Color.fromARGB(255, 88, 191, 92): "Yeşil",
+    Colors.yellow: "Sarı",
+    Color.fromARGB(255, 83, 40, 91): "Mor",
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    _initAsync();
+  }
+
+  Future<void> _initAsync() async {
+    await _loadPalette();
+    await _loadCounts();
+    await _loadFavorites();
+    if (!mounted) return;
+    secilenrenk = renkler.keys.first;
+    setState(() {});
+  }
+
+  static const String _paletteKey = 'palette_v1';
+
+  Future<void> _loadPalette() async {
+    final sp = await SharedPreferences.getInstance();
+    final jsonStr = sp.getString(_paletteKey);
+    if (jsonStr == null) {
+      renkler
+        ..clear()
+        ..addAll(_defaultRenkler);
+      await _savePalette();
+      return;
+    }
+    try {
+      final Map<String, dynamic> raw = Map<String, dynamic>.from(
+        jsonDecode(jsonStr),
+      );
+      renkler.clear();
+      for (final entry in raw.entries) {
+        final intVal = int.parse(entry.key);
+        renkler[Color(intVal)] = entry.value as String;
+      }
+    } catch (_) {
+      // Bozulmuş kayıt varsa varsayılanı yükle
+      renkler
+        ..clear()
+        ..addAll(_defaultRenkler);
+      await _savePalette();
+    }
+  }
+
+  Future<void> _savePalette() async {
+    final sp = await SharedPreferences.getInstance();
+    final Map<String, String> raw = {
+      for (final e in renkler.entries) e.key.value.toString(): e.value,
+    };
+    await sp.setString(_paletteKey, jsonEncode(raw));
+  }
+
+  Future<void> _loadFavorites() async {
+    final sp = await SharedPreferences.getInstance();
+    final list = sp.getStringList(_favKey) ?? <String>[];
+    _favorites
+      ..clear()
+      ..addAll(list.map((e) => int.tryParse(e) ?? -1).where((e) => e >= 0));
+  }
+
+  Future<void> _saveFavorites() async {
+    final sp = await SharedPreferences.getInstance();
+    await sp.setStringList(
+      _favKey,
+      _favorites.map((e) => e.toString()).toList(),
+    );
+  }
+
+  Future<void> _toggleFavoriteSelected() async {
+    final key = secilenrenk.value;
+    if (_favorites.contains(key)) {
+      _favorites.remove(key);
+      await _saveFavorites();
+      Fluttertoast.showToast(msg: 'Favoriden çıkarıldı');
+    } else {
+      _favorites.add(key);
+      await _saveFavorites();
+      Fluttertoast.showToast(msg: 'Favorilere eklendi');
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _loadCounts() async {
+    final sp = await SharedPreferences.getInstance();
+    // Tüm bilinen renkler için oku; yoksa 0
+    for (final color in renkler.keys) {
+      final key = _spKeyFor(color);
+      _usageCounts[color.value] = sp.getInt(key) ?? 0;
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _saveCount(Color color) async {
+    final sp = await SharedPreferences.getInstance();
+    await sp.setInt(_spKeyFor(color), _usageCounts[color.value] ?? 0);
+  }
+
+  Future<void> _resetStats() async {
+    final sp = await SharedPreferences.getInstance();
+    for (final color in renkler.keys) {
+      _usageCounts[color.value] = 0;
+      await sp.setInt(_spKeyFor(color), 0);
+    }
+    if (!mounted) return;
+    setState(() {});
+    Fluttertoast.showToast(
+      msg: "İstatistikler sıfırlandı",
+      gravity: ToastGravity.BOTTOM,
+      timeInSecForIosWeb: 1,
+      backgroundColor: Colors.white,
+      textColor: Colors.black,
+      fontSize: 16.0,
+    );
+  }
+
+  Future<void> _addColorDialog() async {
+    final nameCtrl = TextEditingController();
+    Color tempColor = secilenrenk; // mevcut seçimden başla
+
+    final res = await showDialog<({String name, Color color})>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setStateDialog) {
+            return AlertDialog(
+              title: const Text('Yeni renk ekle'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    TextField(
+                      controller: nameCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'İsim (örn. Bordo)',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        const Text('Önizleme:'),
+                        const SizedBox(width: 8),
+                        Container(
+                          width: 28,
+                          height: 28,
+                          decoration: BoxDecoration(
+                            color: tempColor,
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: Colors.black12),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          'RGB(${tempColor.red}, ${tempColor.green}, ${tempColor.blue})',
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    // Alan içi HSV renk seçici
+                    ColorPicker(
+                      pickerColor: tempColor,
+                      onColorChanged: (c) =>
+                          setStateDialog(() => tempColor = c),
+                      enableAlpha: false,
+                      displayThumbColor: true,
+                      pickerAreaBorderRadius: const BorderRadius.all(
+                        Radius.circular(8),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    // Hızlı blok seçim
+                    BlockPicker(
+                      pickerColor: tempColor,
+                      onColorChanged: (c) =>
+                          setStateDialog(() => tempColor = c),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('İptal'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    final name = nameCtrl.text.trim();
+                    Navigator.pop(ctx, (name: name, color: tempColor));
+                  },
+                  child: const Text('Ekle'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (res == null) return;
+    final newName = res.name.isEmpty ? 'İsimsiz' : res.name;
+    final newColor = res.color;
+
+    if (renkler.keys.any((c) => c.value == newColor.value)) {
+      Fluttertoast.showToast(msg: 'Bu renk zaten ekli.');
+      return;
+    }
+
+    renkler[newColor] = newName;
+    await _savePalette();
+    _usageCounts[newColor.value] = _usageCounts[newColor.value] ?? 0;
+    setState(() {
+      secilenrenk = newColor;
+    });
+  }
+
+  Future<void> _manageColorsDialog() async {
+    await showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setStateDialog) {
+            final entries = renkler.entries.toList();
+            return AlertDialog(
+              title: const Text('Renkleri düzenle / sil'),
+              content: SizedBox(
+                width: 360,
+                child: entries.isEmpty
+                    ? const Text('Hiç renk yok.')
+                    : ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: entries.length,
+                        itemBuilder: (c, i) {
+                          final e = entries[i];
+                          final color = e.key;
+                          final name = e.value;
+                          final count = _usageCounts[color.value] ?? 0;
+                          final isSelected = color.value == secilenrenk.value;
+                          return ListTile(
+                            leading: Container(
+                              width: 24,
+                              height: 24,
+                              color: color,
+                            ),
+                            title: GestureDetector(
+                              onTap: () async {
+                                final ctrl = TextEditingController(text: name);
+                                final newName = await showDialog<String>(
+                                  context: context,
+                                  builder: (c3) => AlertDialog(
+                                    title: const Text('Renk adını düzenle'),
+                                    content: TextField(
+                                      controller: ctrl,
+                                      decoration: const InputDecoration(
+                                        labelText: 'Yeni ad',
+                                      ),
+                                    ),
+                                    actions: [
+                                      TextButton(
+                                        onPressed: () => Navigator.pop(c3),
+                                        child: const Text('İptal'),
+                                      ),
+                                      FilledButton(
+                                        onPressed: () =>
+                                            Navigator.pop(c3, ctrl.text.trim()),
+                                        child: const Text('Kaydet'),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                                if (newName != null && newName.isNotEmpty) {
+                                  renkler[color] = newName;
+                                  await _savePalette();
+                                  setState(() {});
+                                  setStateDialog(() {});
+                                }
+                              },
+                              child: Text(name),
+                            ),
+                            subtitle: Text('Kullanım: $count'),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  tooltip: 'Favori',
+                                  icon: Icon(
+                                    _favorites.contains(color.value)
+                                        ? Icons.star
+                                        : Icons.star_border,
+                                  ),
+                                  onPressed: () async {
+                                    if (_favorites.contains(color.value)) {
+                                      _favorites.remove(color.value);
+                                    } else {
+                                      _favorites.add(color.value);
+                                    }
+                                    await _saveFavorites();
+                                    setState(() {});
+                                    setStateDialog(() {});
+                                  },
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline),
+                                  onPressed: () async {
+                                    if (renkler.length <= 1) {
+                                      Fluttertoast.showToast(
+                                        msg: 'Son rengi silemezsin.',
+                                      );
+                                      return;
+                                    }
+                                    final confirm = await showDialog<bool>(
+                                      context: context,
+                                      builder: (c2) => AlertDialog(
+                                        title: const Text('Silinsin mi?'),
+                                        content: Text(
+                                          '"$name" rengini silmek istediğine emin misin?',
+                                        ),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () =>
+                                                Navigator.pop(c2, false),
+                                            child: const Text('İptal'),
+                                          ),
+                                          FilledButton(
+                                            onPressed: () =>
+                                                Navigator.pop(c2, true),
+                                            child: const Text('Sil'),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                    if (confirm != true) return;
+
+                                    renkler.remove(color);
+                                    _usageCounts.remove(color.value);
+                                    _favorites.remove(color.value);
+                                    if (isSelected) {
+                                      final first = renkler.keys.first;
+                                      secilenrenk = first;
+                                    }
+                                    await _savePalette();
+                                    await _saveFavorites();
+                                    setState(() {});
+                                    setStateDialog(() {});
+                                  },
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Kapat'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _backupRestoreDialog() async {
+    String exportJson() {
+      final paletteRaw = {
+        for (final e in renkler.entries) e.key.value.toString(): e.value,
+      };
+      final data = {
+        'palette': paletteRaw,
+        'counts': {
+          for (final e in _usageCounts.entries) e.key.toString(): e.value,
+        },
+        'favorites': _favorites.map((e) => e.toString()).toList(),
+      };
+      return const JsonEncoder.withIndent('  ').convert(data);
+    }
+
+    final ctrl = TextEditingController(text: exportJson());
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Yedekle / İçeri Al'),
+        content: SizedBox(
+          width: 500,
+          child: TextField(
+            controller: ctrl,
+            minLines: 10,
+            maxLines: 20,
+            decoration: const InputDecoration(
+              hintText: 'JSON veri',
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: ctrl.text));
+              Fluttertoast.showToast(msg: 'Panoya kopyalandı');
+            },
+            child: const Text('Kopyala'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              try {
+                final Map<String, dynamic> raw = jsonDecode(ctrl.text);
+                // Palette
+                final Map<String, dynamic> palRaw = Map<String, dynamic>.from(
+                  raw['palette'] ?? {},
+                );
+                renkler..clear();
+                for (final e in palRaw.entries) {
+                  final k = int.parse(e.key);
+                  renkler[Color(k)] = e.value as String;
+                }
+                await _savePalette();
+                // Counts
+                final Map<String, dynamic> cntRaw = Map<String, dynamic>.from(
+                  raw['counts'] ?? {},
+                );
+                _usageCounts..clear();
+                for (final e in cntRaw.entries) {
+                  _usageCounts[int.parse(e.key)] = (e.value as num).toInt();
+                }
+                // Favorites
+                final List favRaw = List.from(raw['favorites'] ?? []);
+                _favorites
+                  ..clear()
+                  ..addAll(favRaw.map((e) => int.parse(e.toString())));
+                await _saveFavorites();
+                if (renkler.isNotEmpty) {
+                  secilenrenk = renkler.keys.first;
+                }
+                setState(() {});
+                Fluttertoast.showToast(msg: 'İçe aktarıldı');
+              } catch (e) {
+                Fluttertoast.showToast(msg: 'JSON okunamadı');
+              }
+            },
+            child: const Text('İçe Al'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Kapat'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Color? _parseHexColor(String input) {
+    var s = input.trim();
+    if (s.startsWith('#')) s = s.substring(1);
+    if (s.length == 6) {
+      final int? val = int.tryParse(s, radix: 16);
+      if (val == null) return null;
+      return Color(0xFF000000 | val);
+    }
+    return null;
+  }
+
+  String _spKeyFor(Color c) => 'color_count_${c.value}';
+
+  void _rastgelerenksec() {
+    final colors = renkler.keys.toList();
+    if (colors.isEmpty) return;
+    final pool = <Color>[];
+    for (final c in colors) {
+      final weight = _favorites.contains(c.value)
+          ? 3
+          : 1; // favoriler 3x ağırlık
+      for (int i = 0; i < weight; i++) pool.add(c);
+    }
+    final randomcolor = pool[Random().nextInt(pool.length)];
+    setState(() {
+      secilenrenk = randomcolor;
+    });
+  }
+
+  void _yuvarlakyap() {
+    setState(() {
+      iscircle = !iscircle;
+    });
+  }
+
+  void _renginkodunugoster() {
+    Fluttertoast.showToast(
+      msg:
+          "RGB : (${secilenrenk.red},${secilenrenk.green},${secilenrenk.blue})",
+      toastLength: Toast.LENGTH_LONG,
+      gravity: ToastGravity.BOTTOM,
+      timeInSecForIosWeb: 1,
+      backgroundColor: secilenrenk,
+      textColor: Colors.white,
+      fontSize: 16.0,
+    );
+  }
+
+  /// "Bir oje gir" butonu — seçili rengi bugün sürüldü olarak kaydeder
+  Future<void> _ojeGir() async {
+    final key = secilenrenk.value;
+    _usageCounts[key] = (_usageCounts[key] ?? 0) + 1;
+    await _saveCount(secilenrenk);
+    if (!mounted) return;
+    setState(() {});
+    Fluttertoast.showToast(
+      msg:
+          "Kaydedildi: ${renkler[secilenrenk] ?? '#${secilenrenk.value.toRadixString(16)}'}",
+      gravity: ToastGravity.BOTTOM,
+      backgroundColor: secilenrenk,
+      textColor: Colors.white,
+    );
+  }
+
+  int _maxCount() {
+    if (_usageCounts.isEmpty) return 0;
+    return _usageCounts.values.fold<int>(0, (p, e) => e > p ? e : p);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        actions: [
+          PopupMenuButton<String>(
+            onSelected: (value) async {
+              if (value == 'toggleName') {
+                setState(() {
+                  isshowcolorname = !isshowcolorname;
+                });
+              } else if (value == 'resetStats') {
+                await _resetStats();
+              } else if (value == 'addColor') {
+                await _addColorDialog();
+              } else if (value == 'manageColors') {
+                await _manageColorsDialog();
+              } else if (value == 'backup') {
+                await _backupRestoreDialog();
+              }
+            },
+            itemBuilder: (context) {
+              return const [
+                PopupMenuItem(
+                  value: 'toggleName',
+                  child: Row(children: [Text('Renk adını göster / gizle')]),
+                ),
+                PopupMenuItem(
+                  value: 'resetStats',
+                  child: Row(children: [Text('İstatistikleri sıfırla')]),
+                ),
+                PopupMenuItem(
+                  value: 'addColor',
+                  child: Row(children: [Text('Renk ekle')]),
+                ),
+                PopupMenuItem(
+                  value: 'manageColors',
+                  child: Row(children: [Text('Renkleri düzenle / sil')]),
+                ),
+                PopupMenuItem(
+                  value: 'backup',
+                  child: Row(children: [Text('Yedekle / İçeri Al')]),
+                ),
+              ];
+            },
+            icon: const Icon(Icons.more_vert),
+          ),
+        ],
+        title: const Text("Bugün ne sürsem!"),
+        centerTitle: true,
+      ),
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Container(
+                width: 200,
+                height: 200,
+                decoration: BoxDecoration(
+                  color: secilenrenk,
+                  borderRadius: BorderRadius.circular(iscircle ? 100 : 20),
+                  boxShadow: [
+                    BoxShadow(
+                      color: secilenrenk.withOpacity(0.35),
+                      blurRadius: 20,
+                      spreadRadius: 8,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              if (isshowcolorname)
+                Text(
+                  renkler[secilenrenk] ?? "Seçilen renk",
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              const SizedBox(height: 16),
+              // Kontroller
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 12,
+                runSpacing: 8,
+                children: [
+                  DropdownButton<Color>(
+                    value: renkler.keys.contains(secilenrenk)
+                        ? secilenrenk
+                        : null,
+                    hint: const Text("Renk seç"),
+                    items: renkler.entries.map((entry) {
+                      return DropdownMenuItem(
+                        value: entry.key,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(width: 20, height: 20, color: entry.key),
+                            const SizedBox(width: 6),
+                            Text(entry.value),
+                          ],
+                        ),
+                      );
+                    }).toList(),
+                    onChanged: (value) {
+                      if (value == null) return;
+                      setState(() => secilenrenk = value);
+                    },
+                  ),
+                  ElevatedButton(
+                    onPressed: _rastgelerenksec,
+                    child: const Text("Rastgele"),
+                  ),
+                  ElevatedButton.icon(
+                    onPressed: _ojeGir,
+                    icon: const Icon(Icons.check_circle_outline),
+                    label: const Text("Bir oje gir"),
+                  ),
+                  IconButton(
+                    tooltip: _favorites.contains(secilenrenk.value)
+                        ? 'Favoriden çıkar'
+                        : 'Favoriye ekle',
+                    onPressed: _toggleFavoriteSelected,
+                    icon: Icon(
+                      _favorites.contains(secilenrenk.value)
+                          ? Icons.star
+                          : Icons.star_border,
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: _renginkodunugoster,
+                    icon: const Icon(Icons.info_outline),
+                  ),
+                  IconButton(
+                    onPressed: _yuvarlakyap,
+                    icon: Icon(
+                      iscircle
+                          ? Icons.circle_outlined
+                          : Icons.crop_square_outlined,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 24),
+              const Divider(thickness: 1),
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  "Kullanım İstatistikleri",
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+              ),
+              const SizedBox(height: 8),
+              _StatsBars(
+                renkler: renkler,
+                counts: {
+                  for (final c in renkler.keys) c: _usageCounts[c.value] ?? 0,
+                },
+                favorites: _favorites,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Basit, bağımsız bir bar chart (paketsiz)
+class _StatsBars extends StatelessWidget {
+  final Map<Color, String> renkler;
+  final Map<Color, int> counts;
+  final Set<int> favorites;
+  const _StatsBars({
+    required this.renkler,
+    required this.counts,
+    required this.favorites,
+  });
+
+  int get _max => counts.values.fold<int>(0, (p, e) => e > p ? e : p);
+
+  @override
+  Widget build(BuildContext context) {
+    final max = _max;
+    // Favoriler önce, sonra sayıya göre azalan sıralama
+    final sorted = counts.entries.toList()
+      ..sort((a, b) {
+        final fa = favorites.contains(a.key.value);
+        final fb = favorites.contains(b.key.value);
+        if (fa != fb) return fb ? 1 : -1; // favoriler önce
+        return b.value.compareTo(a.value); // sonra çoktan aza
+      });
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final maxWidth = constraints.maxWidth; // taşmaları otomatik önler
+        return Column(
+          children: sorted.map((e) {
+            final color = e.key;
+            final value = e.value;
+            final ratio = max == 0 ? 0.0 : value / max;
+            final barWidth = maxWidth * ratio;
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6.0),
+              child: Row(
+                children: [
+                  Container(width: 20, height: 20, color: color),
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    width: 110,
+                    child: Row(
+                      children: [
+                        if (favorites.contains(color.value))
+                          const Icon(Icons.star, size: 14),
+                        if (favorites.contains(color.value))
+                          const SizedBox(width: 4),
+                        Flexible(
+                          child: Text(
+                            renkler[color] ?? '',
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodyMedium,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: Stack(
+                      alignment: Alignment.centerLeft,
+                      children: [
+                        Container(
+                          height: 20,
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.06),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                        ),
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 300),
+                          width: barWidth.clamp(0, maxWidth),
+                          height: 20,
+                          decoration: BoxDecoration(
+                            color: favorites.contains(color.value)
+                                ? color.withOpacity(0.95)
+                                : color.withOpacity(0.75),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    width: 34,
+                    child: Text(
+                      value.toString(),
+                      textAlign: TextAlign.right,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }).toList(),
+        );
+      },
+    );
+  }
+}
