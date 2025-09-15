@@ -1,0 +1,24 @@
+{
+    "persons": [
+        {
+            "id":1,
+            "isim":"MELİSA",
+            "erkekMi": true,
+            "sevdigirenkler":["mor","kırmızı"],
+            "adres": [
+                {"il":"ankara", "ilce": "çankaya",  "tur": "ev"},
+                {"il":"bursa", "ilce": "yldırım", "tur": "is"}
+            ]
+        },
+        {
+            "id":2,
+            "isim":"Cınar",
+            "erkekMi": false,
+            "sevdigirenkler":["turuncu","kırmızı"],
+            "adres": [
+                {"il":"van", "ilce": "satıyer",  "tur": "ev"},
+                {"il":"yozgat", "ilce": "kadıkoy", "tur": "is"}
+            ]
+        }
+    ]
+ }
