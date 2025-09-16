@@ -2,11 +2,10 @@ import 'dart:convert' show json;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:jsonvericekme/diokulllanimi.dart';
 import 'package:jsonvericekme/personmodels.dart';
 
 void main(List<String> args) {
-  runApp(MaterialApp(home: Diokulllanimi()));
+  runApp(MaterialApp(home: jsonimport()));
 }
 
 Future<List<Person>> _loadjson() async {
